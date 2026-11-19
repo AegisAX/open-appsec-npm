@@ -1,0 +1,24 @@
+FROM ghcr.io/openappsec/nginx-proxy-manager-attachment@sha256:7a1f3e88d0e696234638eb15e85f0aa8707de5ab1b10fec0cd8e39282b13f486 AS vendor
+FROM vendor AS engine
+USER root
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends build-essential ca-certificates cmake curl git libmaxminddb-dev libpcre2-dev libssl-dev perl python3 zlib1g-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY build-engine.sh /src/build-engine.sh
+RUN sh /src/build-engine.sh
+FROM engine AS modules
+COPY build-attachment.sh /src/build-attachment.sh
+RUN sh -c 'curl -fsSL --retry 3 https://codeload.github.com/openappsec/attachment/tar.gz/1ed86d4cee4ae922a4b88d4d56656bcd10603600 -o /tmp/attachment.tgz && echo "c3d0e0e46c9b632023d5a7235647bd8c2bb70ba16ff22229bec60ce4f1da9602  /tmp/attachment.tgz" | sha256sum -c - && mkdir -p /src/attachment && tar -xzf /tmp/attachment.tgz -C /src/attachment --strip-components=1 && bash /src/build-attachment.sh /src/attachment /src/openresty/build/nginx-1.31.8 /out'
+# Some bundled modules keep their notices only in their top-level README.
+RUN cd /src/openresty/bundle && mkdir -p /out/usr/share/doc/aegis-openresty/components && \
+    find . -mindepth 2 -maxdepth 2 -type f \( -iname 'LICENSE*' -o -iname 'COPYING*' -o \
+        -iname 'COPYRIGHT*' -o -iname 'NOTICE*' -o -iname 'README*' \) \
+        -exec cp --parents -t /out/usr/share/doc/aegis-openresty/components {} +
+FROM vendor AS candidate
+USER root
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends libssl3 libpcre2-8-0 libmaxminddb0 zlib1g && rm -rf /var/lib/apt/lists/*
+COPY --from=modules /out/ /
+LABEL io.aegis.openresty.version="1.31.8.1" \
+      io.aegis.nginx.core-backport="1.31.9" \
+      io.aegis.nginx.core-commit="c2c44702c2fbc572e4cfb0a52331061d7fcaca16" \
+      io.aegis.openappsec.attachment-commit="1ed86d4cee4ae922a4b88d4d56656bcd10603600"
+RUN nginx -V && ldd /usr/sbin/nginx > /tmp/aegis-linked && ! grep -F 'not found' /tmp/aegis-linked && rm /tmp/aegis-linked
